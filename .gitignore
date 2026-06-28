@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Outputs (large binary files — not tracked in git)
+outputs/features/*.npy
+outputs/features/*.pkl
+outputs/models/*.pt
+outputs/figures/*.png
+
+# Old backup (pre-refactor notebooks)
+old_backup/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Claude Code
+.claude/
+
+# Temp
+*.tmp
+*.log
+/d/pip_tmp/

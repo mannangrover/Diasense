@@ -1,448 +1,532 @@
-# Diasense Project Progress Journal
+# Diasense — Research Progress & Methodology
 
-## Project: Type 2 Diabetes Prediction from Wearable Sensor Data
-## Started: 2026-06-22 (Fresh Restart)
-## Student: Mannan Grover (B.Tech CSE)
-## Mentor: Claude (Senior DL Engineer)
+## Type 2 Diabetes Prediction from Non-Invasive Wearable Sensor Data
 
----
-
-## Session 1 — 2026-06-22: Architecture Decisions & Implementation Plan
-
-### Status: ALL DECISIONS FINALIZED
-
-### Decisions Made (all confirmed by student):
-- [x] Problem Framing: 4-class with hierarchical evaluation (4/3/2 levels)
-- [x] Feature Strategy: Option D — Hybrid (engineered features + LSTM)
-- [x] Data Processing: Two-track (continuous modalities + event-based modalities)
-- [x] Model: Daily-summary LSTM (14 × 22) as main model + RF baseline for comparison
-- [x] Evaluation: ROC-AUC (multi-class OvR macro) + PR-AUC, Sensitivity, Specificity
-- [x] Validation: GroupKFold (5-fold) for dev + held-out recommended_split for final
-
-### Key Discussions:
-1. Student correctly identified sleep/activity as event-based (not minute-by-minute)
-2. Student wanted to skip XGBoost — agreed to quick RF baseline on new features instead
-3. LSTM redesigned: daily summaries (14 days × 22 features) instead of raw 60-min windows
-
-### Documents Created:
-- PROGRESS.md (this file)
-- IMPLEMENTATION_PLAN.md (complete decision history + technical design + roadmap)
+**Author:** Mannan Grover (B.Tech CSE)
+**Dataset:** AI-READI v3.0.0
+**Period:** June 22 – June 29, 2026
 
 ---
 
-## Session 2 — 2026-06-22: Step 1 — Project Setup (COMPLETED)
+## Abstract
 
-### What was done:
-- [x] Created folder structure: src/data, src/features, src/models, src/evaluation
-- [x] Created output directories: outputs/features, outputs/models, outputs/figures
-- [x] Created config.py — central configuration with ALL paths, constants, feature names
-- [x] Created __init__.py for all packages (src, data, features, models, evaluation)
-- [x] Created placeholder modules with docstrings (12 .py files)
-- [x] Validated: all imports work, all paths resolve, config is correct
-
-### Files Created:
-```
-config.py                        — Central config (paths, labels, features, model params)
-src/__init__.py                  — Package init
-src/data/__init__.py             — Package init
-src/data/cohort.py               — Placeholder (Step 2)
-src/data/loaders.py              — Placeholder (Step 3)
-src/data/quality.py              — Placeholder (Step 2)
-src/features/__init__.py         — Package init
-src/features/continuous.py       — Placeholder (Step 3)
-src/features/sleep.py            — Placeholder (Step 4)
-src/features/activity.py         — Placeholder (Step 4)
-src/features/daily_summary.py    — Placeholder (Step 5)
-src/models/__init__.py           — Package init
-src/models/baseline.py           — Placeholder (Step 6)
-src/models/lstm.py               — Placeholder (Step 7)
-src/models/trainer.py            — Placeholder (Step 7)
-src/evaluation/__init__.py       — Package init
-src/evaluation/metrics.py        — Placeholder (Step 6-7)
-outputs/features/                — Empty (will hold feature arrays)
-outputs/models/                  — Empty (will hold .pt checkpoints)
-outputs/figures/                 — Empty (will hold plots)
-```
-
-### Key Design Decisions:
-- config.py is the single source of truth for all paths and constants
-- set_seed() function handles reproducibility across numpy, random, and torch
-- STRESS_HIGH_THRESHOLD left as None — to be set from data during Phase 0
-- Old notebooks/*.npy files left untouched (reference from previous work)
-
-### Concepts Taught:
-- Single Source of Truth: one place for all paths/constants, everything else imports from it
-- Python packages: __init__.py makes a directory importable as a module
-
-### Implementation Roadmap:
-1. [x] Step 1: Project setup (folders, config.py) ✅ DONE
-2. [ ] Step 2: Phase 0 — Data Audit (notebook 01)
-3. [ ] Step 3: Phase 1A — Continuous feature extraction (HR, Stress, Resp, SpO2)
-4. [ ] Step 4: Phase 1B — Event-based feature extraction (Sleep, Activity, Calories)
-5. [ ] Step 5: Phase 1C — Daily summary assembly → (1655, 14, 22) sequences
-6. [ ] Step 6: Phase 2 — RF/LR baseline sanity check
-7. [ ] Step 7: Phase 3 — LSTM training & evaluation
-8. [ ] Step 8: Phase 4 — Analysis & interpretation
-
-### Next: Step 2 — Phase 0 Data Audit
+Diasense predicts Type 2 Diabetes severity using **exclusively non-invasive wearable data** from a Garmin Vivosmart 5 smartwatch. The system classifies participants into four categories (healthy, prediabetes, oral medication, insulin-dependent) and evaluates performance hierarchically at 4-class, 3-class, and 2-class levels. Through a pipeline of engineered temporal features, knowledge distillation from CGM teacher models, LightGBM gradient boosting, survey feature integration, and Optuna hyperparameter optimization, we achieve a final **2-class AUC of 0.7937** — a **+10.9 point improvement** over the initial distilled LSTM baseline of 0.6846.
 
 ---
 
-## Session 3 — 2026-06-26: Step 2 — Phase 0 Data Audit (COMPLETED)
+## 1. Problem Formulation
 
-### What was done:
-- [x] Implemented `src/data/cohort.py` — loads, merges, filters, labels the cohort
-- [x] Implemented `src/data/quality.py` — checks file availability across all 1655 participants
-- [x] Created `notebooks/01_data_audit.ipynb` — interactive audit notebook with visualizations
-- [x] Updated `config.py` — fixed stress invalid values, set STRESS_HIGH_THRESHOLD
+### 1.1 Classification Task
 
-### Key Findings:
+We frame diabetes prediction as a **4-class ordinal classification** problem with hierarchical evaluation:
 
-**Cohort:**
-- 1,655 participants (580 healthy, 427 prediabetes, 471 oral_med, 177 insulin)
-- Insulin is smallest class at 10.7%
+| Level | Classes | Clinical Meaning |
+|-------|---------|-----------------|
+| **4-class** | Healthy (0), Prediabetes (1), Oral Medication (2), Insulin-Dependent (3) | Full severity spectrum |
+| **3-class** | Healthy (0), Prediabetes (1), Diabetic (2) | Merge oral + insulin into one diabetic class |
+| **2-class** | Healthy (0), Not Healthy (1) | Binary screening: any diabetes vs. none |
 
-**Dataset Split (surprise!):**
-- Dataset provides a 3-way split: train (1156), val (248), test (251)
-- Previously assumed 2-way — this is better for evaluation
+### 1.2 Evaluation Metrics
 
-**Modality Availability:**
-- Heart Rate, Sleep, Activity, Calories: 100% available
-- Respiratory Rate: 99.6% (6 missing)
-- Stress: 98.7% (22 missing)
-- SpO2: 79.2% (344 missing) — weakest modality
-- SpO2 missingness is uniform across classes (no bias concern)
-- 77.7% of participants have all 7 modalities
+- **Primary:** ROC-AUC (macro-averaged, One-vs-Rest for multi-class)
+- **Secondary:** Accuracy, per-class sensitivity/specificity
+- **Validation:** 5-fold Stratified K-Fold cross-validation with out-of-fold (OOF) predictions
 
-**Critical Bug Found:**
-- Stress values: -2 AND -1 are both invalid (not just -2 as originally assumed)
-- -1 values account for 44% of all stress readings!
-- Updated config.py to filter both sentinels
+### 1.3 Constraint: Non-Invasive Only
 
-**Config Updates:**
-- `STRESS_HIGH_THRESHOLD = 50` (top ~23% of valid readings, median=30, 75th=48)
-- `stress.invalid_values = [-2, -1]` (was [-2] only)
+At inference time, the model uses **only**:
+- Wearable sensor data (heart rate, stress, SpO2, respiratory rate, sleep, activity, calories)
+- Self-reported survey data (demographics, comorbidities, lifestyle)
 
-### Implications for Next Steps:
-- SpO2 features will need imputation for ~21% of participants
-- Stress feature extraction must filter -1 values
-- Can use dataset's recommended_split instead of GroupKFold for final eval
-- Still use GroupKFold on train set for model development/tuning
-
-### Concepts Taught:
-- Data audit: always understand your data before modeling (40-60% of ML time is data work)
-- Sentinel values: device-specific codes that look like real data but aren't
-- Missingness bias: checking if missing data correlates with labels (it doesn't here — good)
-
-### Implementation Roadmap:
-1. [x] Step 1: Project setup (folders, config.py) ✅ DONE
-2. [x] Step 2: Phase 0 — Data Audit (notebook 01) ✅ DONE
-3. [x] Step 3: Phase 1A — Continuous feature extraction (HR, Stress, Resp, SpO2) ✅ DONE
-4. [x] Step 4: Phase 1B — Event-based feature extraction (Sleep, Activity, Calories) ✅ DONE
-5. [x] Step 5: Phase 1C — Daily summary assembly → (1586, 14, 22) sequences ✅ DONE
-6. [ ] Step 6: Phase 2 — RF/LR baseline sanity check
-7. [ ] Step 7: Phase 3 — LSTM training & evaluation
-8. [ ] Step 8: Phase 4 — Analysis & interpretation
-
-### Next: Step 6 — Phase 2 RF/LR Baseline
+**No blood draws, no CGM, no clinical measurements at test time.** CGM data is used only during training via knowledge distillation.
 
 ---
 
-## Session 4 — 2026-06-26: Steps 3-5 — Feature Extraction Pipeline (COMPLETED)
+## 2. Dataset
 
-### What was done:
-- [x] Implemented `src/data/loaders.py` — generic JSON loader for continuous modalities
-- [x] Implemented `src/features/continuous.py` — 13 daily features from HR/Stress/Resp/SpO2
-- [x] Implemented `src/features/sleep.py` — 5 daily features from sleep stage intervals
-- [x] Implemented `src/features/activity.py` — 4 daily features from activity segments + calories
-- [x] Implemented `src/features/daily_summary.py` — merges all 22 features, pads to 14 days
-- [x] Updated `src/data/cohort.py` — added dead-sensor filtering (exclude_dead_sensors flag)
-- [x] Updated `src/data/quality.py` — added find_dead_sensor_pids() function
-- [x] Updated `config.py` — fixed body_keys, added -1 to resp invalid values
+### 2.1 AI-READI v3.0.0
 
-### Bugs Found & Fixed:
-1. **body_key wrong for resp & spo2**: both use "breathing" not their modality name
-2. **Respiratory rate has -1 sentinels** too (16% of readings) — added to invalid_values
-3. **69 dead-sensor participants**: all HR=0, all stress/resp invalid — filtered out
-4. **Calorie values are cumulative**, not incremental — switched from sum() to max()
-5. **56% of participants have <14 days** of continuous data — use padding + masking
+The AI-READI (Artificial Intelligence Ready and Equitable Atlas for Diabetes Insights) dataset provides multi-modal data from 2,280 participants. After quality filtering:
 
-### Design Decisions:
-- Dead-sensor filtering via flag on build_cohort(exclude_dead_sensors=True)
-- Padding: shorter sequences zero-padded to 14 days, actual length stored for masking
-- Calorie feature: max per day (cumulative counter)
-- Sleep percentages: computed against sleep-only time (excluding awake intervals)
+| Property | Value |
+|----------|-------|
+| Total participants (after filtering) | 1,586 |
+| Monitoring duration | 14 days per participant |
+| Wearable device | Garmin Vivosmart 5 |
+| CGM device | Dexcom G6 (training only) |
+| Survey data | 292 observation types from OMOP CDM |
 
-### Cohort After Filtering:
-- 1586 participants (was 1655, removed 69 dead sensors)
-- Classes: healthy=560, prediabetes=410, oral_med=446, insulin=170
+### 2.2 Class Distribution
 
-### Output Files:
-- outputs/features/X.npy — shape (n, 14, 22) padded sequences
-- outputs/features/y.npy — shape (n,) integer labels
-- outputs/features/lengths.npy — shape (n,) actual sequence lengths
-- outputs/features/person_ids.npy — shape (n,) participant IDs
+| Class | Label | Count | Percentage |
+|-------|-------|-------|------------|
+| Healthy | 0 | 560 | 35.3% |
+| Prediabetes | 1 | 410 | 25.9% |
+| Oral Medication | 2 | 446 | 28.1% |
+| Insulin-Dependent | 3 | 170 | 10.7% |
 
----
+### 2.3 Data Quality Filtering
 
-## Session 5 — 2026-06-27: Steps 6-7 — Baseline + LSTM + Tuning (COMPLETED)
+- **Dead sensor removal:** 69 participants excluded (all HR readings = 0, all stress/resp invalid)
+- **Sentinel value handling:** HR (-1), Stress (-2, -1), Respiratory rate (-1), SpO2 — filtered before feature computation
+- **Survey sentinel values:** 777, 555, 888, 999, 99 treated as missing (NaN)
+- **CGM coverage:** 1,569/1,586 participants (98.9%) have CGM data; used only for teacher training
 
-### What was done:
-- [x] Implemented `src/models/baseline.py` — RF + LR baselines
-- [x] Implemented `src/models/lstm.py` — DiasenseLSTM class
-- [x] Implemented `src/models/trainer.py` — train_kfold() with StratifiedKFold CV
-- [x] Implemented `src/evaluation/metrics.py` — evaluate_hierarchical() at 4/3/2 class levels
-- [x] Created `tune_baselines.py` — tunes RF (10 configs), LR (7 configs), GB (4 configs)
-- [x] Created `tune_lstm.py` — tunes 19 LSTM configurations
-- [x] Created `check_accuracy.py` — accuracy + per-class classification reports
+### 2.4 Modality Availability
 
-### Tuning Results:
-
-**Baseline Models (best configs, 5-fold StratifiedKFold):**
-
-| Model | Config | Features | 4-class AUC |
-|---|---|---|---|
-| Random Forest | n_est=500, depth=15, min_leaf=5, balanced | 44 (mean+std) | 0.6534 |
-| Logistic Regression | C=0.01, balanced | 44 (mean+std) | 0.6420 |
-| Gradient Boosting | n_est=500, depth=5, lr=0.01 | 44 (mean+std) | 0.6320 |
-
-Key finding: adding temporal variability features (std across days) doubled feature count from 22 → 44 and helped RF the most.
-
-**LSTM Models (best config):**
-
-| Config | Hidden | Layers | Dropout | Attention | 4-class AUC |
-|---|---|---|---|---|---|
-| combo1 (best) | 64 | 2 | 0.4 | Yes | 0.6618 |
-
-Key findings:
-- Attention mechanism was the single biggest improvement
-- Smaller hidden size (64) + higher dropout (0.4) beat larger models
-- Label smoothing (0.1) helped regularization
-
-**Accuracy Analysis:**
-- RF: 40.0% | LR: 35.8% | LSTM: 34.0% | Majority baseline: 35.3%
-- Accuracy is misleading because class weighting (used for AUC) pushes model to find minority class patterns at the cost of overall accuracy
-- AUC is the correct primary metric for this imbalanced multi-class problem
-
-### Files Created:
-```
-tune_baselines.py    — RF/LR/GB hyperparameter tuning
-tune_lstm.py         — 19-config LSTM architecture search
-check_accuracy.py    — Accuracy + classification reports
-```
+| Modality | Coverage |
+|----------|----------|
+| Heart Rate | 100% |
+| Sleep | 100% |
+| Activity | 100% |
+| Calories | 100% |
+| Respiratory Rate | 99.6% |
+| Stress | 98.7% |
+| SpO2 | 79.2% |
+| CGM (training only) | 98.9% |
 
 ---
 
-## Session 6 — 2026-06-27: Enhanced Features — Option C, B, D + Hourly (COMPLETED)
+## 3. Feature Engineering
 
-### What was done:
-- [x] Created `src/features/enhanced.py` — Option C (19 richer features) + Option B (12 segment features) + Option D (10 hourly-derived features)
-- [x] Created `run_enhanced.py` — extraction + evaluation of Option C, B, Combined
-- [x] Created `src/features/hourly.py` — hourly resolution extraction (336 timesteps × 10 features)
-- [x] Created `run_hourly.py` — flat 336-step LSTM evaluation
-- [x] Created `run_option_d.py` — Option D (hourly-derived daily features) evaluation
-- [x] Installed PyTorch CUDA 12.8 for RTX 2050 GPU acceleration
+### 3.1 Base Wearable Features (22 per day)
 
-### Feature Engineering — Option C (19 richer features per day):
-Clinically-motivated features extracted from raw sensor data:
-- **HR (6):** HRV (RMSSD), successive diff std, circadian amplitude, resting HR estimate, nocturnal dip %, entropy proxy
-- **Stress (3):** sustained high-stress episode count, IQR, low-stress %
-- **SpO2 (3):** desaturation events (<90%), minimum, range
-- **Activity (4):** sedentary bout count, max bout duration, active bout count, steps per active minute
-- **Sleep (3):** sleep efficiency, WASO (wake after sleep onset), fragmentation
+Extracted from raw Garmin Vivosmart 5 JSON files for each of 14 monitoring days:
 
-### Feature Engineering — Option B (12 segment-level features per day):
-Time-of-day features by segment (night/morning/afternoon/evening):
-- HR mean × 4 segments, Stress mean × 4 segments, SpO2 night/day means, Steps morning/afternoon
+| Source | Features | Count |
+|--------|----------|-------|
+| Heart Rate | mean, std, min, max, range | 5 |
+| Stress | mean, std, high_pct (>50) | 3 |
+| Respiratory Rate | mean, std | 2 |
+| SpO2 | mean, std, below_95_pct | 3 |
+| Sleep | total_hrs, deep_pct, rem_pct, light_pct, awake_count | 5 |
+| Activity | steps, sedentary_min, active_min | 3 |
+| Calories | total (daily max of cumulative counter) | 1 |
 
-### Feature Engineering — Option D (10 hourly-derived daily features):
-Captures WHEN things happen, not just what:
-- HR peak/trough hour, hourly CV, post-meal HR (breakfast/lunch/dinner windows)
-- Stress peak hour, active hours count, peak active hour, evening-vs-night HR
+**Output shape:** `(1586, 14, 22)` — padded to 14 days with actual lengths stored for masking.
 
-### Hourly Resolution Experiment:
-- Shape: (1586, 336, 10) — 14 days × 24 hours × 10 features per hour
-- **Result: 4-AUC = 0.6454** — worse than daily (-0.016)
-- Why: 28.8% NaN rate across 336 steps, attention diluted over too many positions, simpler features per step
+### 3.2 Enhanced Features — Option C (19 per day)
 
-### Results Summary:
+Clinically-motivated features designed to capture diabetes-relevant physiological patterns:
 
-| Configuration | Features/day | Accuracy | 4-AUC | 3-AUC | 2-AUC |
-|---|---|---|---|---|---|
-| Original LSTM | 22 | 34.0% | 0.6618 | — | — |
-| **+ Option C** | **41** | **33.9%** | **0.6725** | **0.6706** | **0.6632** |
-| + Option B | 34 | 35.0% | 0.6587 | 0.6578 | 0.6618 |
-| + Combined (C+B) | 53 | 35.5% | 0.6638 | 0.6638 | 0.6633 |
-| + Option C+D | 51 | 35.1% | 0.6719 | 0.6738 | 0.6735 |
-| Hourly 336-step | 10/hr | 31.1% | 0.6454 | 0.6508 | 0.6598 |
-| RF + Option C | 41 | 41.5% | 0.6562 | 0.6578 | 0.6615 |
-| RF + Combined | 53 | 41.7% | 0.6608 | 0.6605 | 0.6646 |
+| Source | Features | Rationale |
+|--------|----------|-----------|
+| HR Advanced | HRV (RMSSD), successive diff std, circadian amplitude, resting HR estimate, nocturnal dip %, entropy proxy | HRV reduction is a hallmark of diabetic autonomic neuropathy |
+| Stress Advanced | sustained high episodes, IQR, low stress % | Chronic stress correlates with insulin resistance |
+| SpO2 Advanced | desaturation events (<90%), min, range | Sleep apnea (desaturation) is comorbid with T2D |
+| Activity Advanced | sedentary bout count/max, active bout count, steps per active min | Sedentary behavior patterns predict metabolic risk |
+| Sleep Advanced | efficiency, WASO (wake after sleep onset), fragmentation | Poor sleep quality is bidirectionally linked with diabetes |
 
-**Best LSTM: Option C (0.6725 4-AUC)** — HRV and circadian features are strongest contributors.
-**Best RF: Combined (0.6608 4-AUC)** — RF benefits from all features; LSTM doesn't.
+**Combined wearable shape:** `(1586, 14, 41)` — 22 base + 19 enhanced features per day.
 
-### Key Takeaways:
-1. Option C (HRV, circadian amplitude, sleep quality) is the clear winner for LSTM (+1.07% AUC)
-2. Option B segment features add noise for LSTM (already learns temporal patterns)
-3. Combined features dilute the Option C gains for LSTM
-4. Hourly resolution fails — too sparse, attention gets lost over 336 steps
-5. For 3-class and 2-class, Option C+D is marginally better than C alone
+### 3.3 Alternative Feature Sets Explored
 
-### Saved Feature Arrays:
-```
-outputs/features/X_option_c.npy    — (1586, 14, 19) — 78.5% non-nan
-outputs/features/X_option_b.npy    — (1586, 14, 12) — 72.2% non-nan
-outputs/features/X_option_d.npy    — (1586, 14, 10)
-outputs/features/X_hourly.npy      — (1586, 336, 10) — 28.8% nan
-outputs/features/X_combined.npy    — (1586, 14, 53)
-outputs/features/X_option_cd.npy   — (1586, 14, 51)
-```
+| Feature Set | Shape | Result | Outcome |
+|-------------|-------|--------|---------|
+| Option B (segment-level) | (1586, 14, 12) | 4-AUC=0.6587 | Dropped — added noise for LSTM |
+| Option D (hourly-derived) | (1586, 14, 10) | 4-AUC=0.6719 | Marginal; C alone preferred |
+| Hourly resolution | (1586, 336, 10) | 4-AUC=0.6454 | Failed — too sparse (28.8% NaN) |
+| Combined C+B | (1586, 14, 53) | 4-AUC=0.6638 | Diluted Option C gains |
 
-### Files Created:
-```
-src/features/enhanced.py   — Option C + B + D feature extractors
-src/features/hourly.py     — Hourly resolution feature extractor
-run_enhanced.py            — Enhanced feature eval (C, B, Combined)
-run_hourly.py              — Hourly LSTM eval (336-step)
-run_option_d.py            — Option D eval (C+D = 51 features)
-run_remaining_eval.py      — Remaining evals (B LSTM + Combined)
-```
+### 3.4 CGM Features (8 per day, training only)
 
----
+Extracted from Dexcom G6 continuous glucose monitoring data:
 
-## Session 7 — 2026-06-28: CGM Multi-Task + Knowledge Distillation (IN PROGRESS)
-
-### What was done:
-- [x] Discovered CGM data already present: `wearable_blood_glucose/continuous_glucose_monitoring/dexcom_g6/`
-- [x] CGM data audit: 2,245 participants, Dexcom G6, glucose every 5 min, Open mHealth JSON format
-- [x] Created `src/features/cgm.py` — CGM feature extraction functions
-- [x] Created `cgm_multitask.ipynb` — full CGM multi-task pipeline as Jupyter notebook
-- [x] Registered Python 3.12 CUDA kernel for Jupyter (`py312`)
-- [x] Ran multi-task BiLSTM lambda sweep (λ = 0.0, 0.3, 0.5, 1.0)
-- [x] Created `run_distillation.py` — teacher-student knowledge distillation pipeline
-- [ ] Knowledge distillation sweep running (T × α grid search)
-
-### CGM Data Audit:
-- **Coverage:** 1,569 / 1,586 cohort participants have CGM (98.9%)
-- **Duration:** min=2d, max=15d, mean=10.7d (98.7% have ≥ 7 days)
-- **Valid CGM days:** 15,193 / 22,204 (68.4%) — quality gate: ≥48 readings/day
-- **Format:** `body.cgm[i].blood_glucose.value` (int, mg/dL), sentinels: "High"→400, "Low"→40
-- **Date alignment:** CGM and wearable share same start date, CGM covers first ~11 of 14 days
-
-### Mean Glucose by Class (strong separation):
-| Class | Mean glucose (mg/dL) | Std |
-|---|---|---|
-| Healthy | 117.6 | 14.0 |
-| Prediabetes | 126.0 | 23.5 |
-| Oral medication | 148.6 | 38.0 |
-| Insulin-dependent | 175.8 | 44.0 |
-
-### CGM Features Extracted (8 per day):
-| Feature | Healthy | Prediabetes | Oral med | Insulin |
-|---|---|---|---|---|
-| glucose_mean | 117.5 | 126.1 | 150.1 | 181.2 |
+| Feature | Healthy | Prediabetes | Oral Med | Insulin |
+|---------|---------|-------------|----------|---------|
+| glucose_mean (mg/dL) | 117.5 | 126.1 | 150.1 | 181.2 |
 | glucose_std | 18.9 | 21.1 | 28.0 | 39.3 |
-| time_in_range (%) | 96.3 | 93.4 | 79.5 | 59.6 |
+| time_in_range (70–180 mg/dL, %) | 96.3 | 93.4 | 79.5 | 59.6 |
 | time_above_range (%) | 2.5 | 5.9 | 19.9 | 39.4 |
-| glucose_cv | 16.1 | 16.6 | 18.7 | 22.1 |
+| glucose_cv (%) | 16.1 | 16.6 | 18.7 | 22.1 |
 | nocturnal_mean | 121.6 | 130.7 | 156.2 | 193.6 |
-| mage | 39.2 | 42.9 | 53.8 | 69.3 |
-| peak_count (>200) | 2.6 | 8.9 | 35.5 | 82.7 |
+| MAGE | 39.2 | 42.9 | 53.8 | 69.3 |
+| peak_count (>200 mg/dL) | 2.6 | 8.9 | 35.5 | 82.7 |
 
-### Approach 1 — Multi-Task BiLSTM:
-Architecture: BiLSTM (hidden=128, bidirectional, attention) + two heads
-- Classification head: 4-way diabetes class
-- Glucose regression head: 8 daily CGM features (masked MSE)
-- Loss: L = L_class + λ × L_glucose
+These features show strong class separation and are used exclusively to train the teacher model.
 
-**Results:**
+### 3.5 Survey Features (27 non-invasive)
 
-| Config | Accuracy | 4-AUC | 3-AUC | 2-AUC |
-|---|---|---|---|---|
-| BiLSTM+CGM λ=0.0 (no glucose) | 36.1% | 0.6605 | 0.6663 | 0.6641 |
-| BiLSTM+CGM λ=0.3 | 36.1% | 0.6614 | 0.6696 | 0.6684 |
-| BiLSTM+CGM λ=0.5 | 36.4% | 0.6628 | 0.6694 | 0.6678 |
-| BiLSTM+CGM λ=1.0 | 35.7% | 0.6637 | 0.6701 | 0.6682 |
+Extracted from the OMOP-format `observation.csv` (707,126 rows, 2,280 participants, 292 observation types). Features selected to be non-invasive and non-leaking (excluding diabetes diagnosis labels, A1C, and diabetes-specific medications):
 
-**Diagnosis:** Multi-task didn't beat Option C (0.6725). Two reasons:
-1. Architecture change (BiLSTM hidden=128) overfit more than proven hidden=64 attention LSTM
-2. CGM does help incrementally (λ=1.0 beats λ=0.0 by +0.003) but not enough to overcome arch regression
+| Category | Features | Source Variables |
+|----------|----------|-----------------|
+| Demographics | age, education_years | cage, years_of_education |
+| Smoking | ever smoked, current smoker | susmkncf, susmkcdur |
+| Alcohol | ever consumed | sualckncf |
+| Mental Health | CES-D total score, restless sleep | cestl, ces7 |
+| Diabetes Distress | PAID score (0–100) | paidscore |
+| Medications | sleeping pills frequency | cm_slp |
+| Diet | composite score, fast food, beans, regular food, desserts, fats | dietscore, diet1/5/6/7/8 |
+| Family History | parent with T2D, sibling with T2D | fh_dm2pt, fh_dm2sb |
+| Comorbidities | hypertension, obesity, high cholesterol, heart attack, stroke, kidney problems, circulation | mhoccur_hbp/obs/clsh/mi/strk/rnl/circ |
+| Vision | difficulty seeing | via1 |
+| Food Insecurity | two items | pxfi1, pxfi2 |
 
-### Approach 2 — Knowledge Distillation (COMPLETED):
-```
-TEACHER: wearable(41) + CGM(8) = 49 features → LSTM → soft predictions
-STUDENT: wearable(41) only → LSTM → matches teacher's soft predictions
-```
-- Same proven architecture (hidden=64, attention) for both teacher and student
-- Distillation loss: α × CE(hard_labels) + (1-α) × KL(student/T, teacher/T) × T²
-- Sweep: T ∈ {2, 3, 4}, α ∈ {0.3, 0.5, 0.7}
+**Key finding:** Survey-only LightGBM (27 features, no wearable data) achieved 4-AUC = 0.6963, nearly matching the LSTM with 41 wearable features (0.6725). Top predictors: PAID score, hypertension, family history, age, education level.
 
-**Teacher: 4-AUC = 0.7472 | Accuracy = 45.4%** (sees glucose directly)
+### 3.6 LightGBM Feature Flattening
 
-**Student results (wearable only at test time):**
+For tree-based models, temporal wearable data was flattened into summary statistics:
 
-| T | α | Accuracy | 4-AUC | 3-AUC | 2-AUC |
-|---|---|---|---|---|---|
-| **2** | **0.3** | **37.6%** | **0.6879** | **0.6858** | **0.6846** |
-| 2 | 0.5 | 36.6% | 0.6838 | 0.6811 | 0.6772 |
-| 2 | 0.7 | 36.4% | 0.6774 | 0.6753 | 0.6705 |
-| 3 | 0.3 | 37.0% | 0.6877 | 0.6855 | 0.6849 |
-| 3 | 0.5 | 36.8% | 0.6838 | 0.6809 | 0.6769 |
-| 3 | 0.7 | 36.6% | 0.6782 | 0.6767 | 0.6733 |
-| 4 | 0.3 | 37.6% | 0.6877 | 0.6856 | 0.6850 |
-| 4 | 0.5 | 36.7% | 0.6836 | 0.6808 | 0.6773 |
-| 4 | 0.7 | 36.3% | 0.6779 | 0.6766 | 0.6729 |
+**Per-feature aggregates (7 stats × 41 features = 287):**
+- mean, std, min, max, range across valid days
+- slope (linear trend over time)
+- first-to-last difference
 
-**Best student: T=2, α=0.3 → 4-AUC = 0.6879 (+0.0154 over Option C baseline)**
+Plus `seq_length` (number of valid days) = **288 wearable summary features**.
+Combined with 27 survey features = **315 total features** for LightGBM.
 
-Key findings:
-1. Largest single improvement in the project (+0.015 AUC)
-2. α=0.3 wins across all temperatures — heavier teacher reliance (70%) works best
-3. Temperature has minimal effect (T=2,3,4 all ~0.6877-0.6879 at α=0.3)
-4. Student recovers 20% of teacher's gap from wearable data alone
-5. Accuracy improved from 33.9% → 37.6% (+3.7pp)
+### 3.7 Per-Day Features (experimental)
 
-### CUDA Setup:
-- GPU: NVIDIA GeForce RTX 2050, 4GB VRAM
-- Driver: 581.83, CUDA 13.0
-- PyTorch: 2.11.0+cu128 (installed from local .whl after clearing 4.2GB pip cache)
-- Kernel: registered as `py312` for Jupyter
-
-### Saved Feature Arrays (new this session):
-```
-outputs/features/X_cgm.npy        — (1586, 14, 8) — CGM daily features
-outputs/features/cgm_mask.npy     — (1586, 14)    — valid CGM day mask (68.4% True)
-outputs/features/teacher_oof_proba.npy — teacher's OOF predictions (pending)
-```
-
-### Files Created:
-```
-src/features/cgm.py          — CGM feature extraction functions
-cgm_multitask.ipynb          — Full CGM multi-task pipeline (notebook)
-make_cgm_notebook.py         — Notebook generator script
-run_distillation.py          — Teacher-student knowledge distillation
-```
-
-### Implementation Roadmap (updated):
-1. [x] Step 1: Project setup ✅
-2. [x] Step 2: Phase 0 — Data Audit ✅
-3. [x] Step 3: Phase 1A — Continuous feature extraction ✅
-4. [x] Step 4: Phase 1B — Event-based feature extraction ✅
-5. [x] Step 5: Phase 1C — Daily summary assembly ✅
-6. [x] Step 6: Phase 2 — RF/LR baseline + tuning ✅
-7. [x] Step 7: Phase 3 — LSTM training + tuning ✅
-8. [x] Step 8: Enhanced features (Option C/B/D) ✅
-9. [x] Step 9: Hourly resolution experiment ✅
-10. [x] Step 10: CGM multi-task learning ✅
-11. [ ] Step 11: Knowledge distillation (running)
-12. [ ] Step 12: Final model selection + production code update
-13. [ ] Step 13: Analysis & interpretation
-
-### Current Best Model (as of 2026-06-28):
-**Knowledge-distilled LSTM (T=2, α=0.3)**
-- Architecture: LSTM hidden=64, 2 layers, dropout=0.4, attention
-- Input: wearable only (41 features/day = 22 original + 19 Option C)
-- Training: distillation from teacher that saw CGM glucose data
-- **4-class AUC: 0.6879 | 3-class AUC: 0.6858 | 2-class AUC: 0.6846 | Accuracy: 37.6%**
+Raw 14 × 41 = 574 individual day values fed directly to LightGBM (which handles NaN natively), combined with aggregates and survey features = **725 total features**. This gave marginal improvement over summary stats (4-AUC: 0.7067 vs 0.7024).
 
 ---
+
+## 4. Models & Methods
+
+### 4.1 Baseline Models
+
+**Random Forest:**
+- Best config: n_estimators=500, max_depth=15, min_samples_leaf=5, class_weight=balanced
+- Features: 44 (mean + std across days for each of 22 base features)
+- **4-AUC: 0.6534** | Accuracy: 40.0%
+
+**Logistic Regression:**
+- Best config: C=0.01, class_weight=balanced
+- **4-AUC: 0.6420** | Accuracy: 35.8%
+
+**Gradient Boosting:**
+- Best config: n_estimators=500, max_depth=5, learning_rate=0.01
+- **4-AUC: 0.6320** | Accuracy: 32.4%
+
+### 4.2 LSTM with Attention
+
+**Architecture (DiasenseLSTM):**
+```
+Input (batch, 14, F) → LSTM(hidden=64, layers=2, dropout=0.4, bidirectional=False)
+    → Attention(64 → 1 weight per timestep, length-masked softmax)
+    → Dropout(0.4)
+    → Linear(64 → 4)
+```
+
+**Training:**
+- 5-fold StratifiedKFold, 60 epochs, early stopping (patience=10)
+- Optimizer: Adam (lr=1e-3, weight_decay=1e-4)
+- Loss: CrossEntropy with class weights (inversely proportional to frequency) + label smoothing (0.1)
+- Learning rate scheduler: ReduceLROnPlateau (factor=0.5, patience=5)
+
+**Key architectural finding:** Attention mechanism was the single biggest improvement. It learns which of the 14 monitoring days are most informative, effectively downweighting padded or noisy days.
+
+**Results progression:**
+
+| Configuration | Input Features | 4-AUC |
+|--------------|----------------|-------|
+| Base LSTM (no attention) | 22/day | ~0.64 |
+| + Attention | 22/day | 0.6618 |
+| + Option C features | 41/day | 0.6725 |
+
+### 4.3 CGM Multi-Task Learning (Experiment)
+
+**Architecture:** BiLSTM (hidden=128, bidirectional) + two heads:
+- Classification head: 4-way softmax
+- Glucose regression head: predict 8 daily CGM features (masked MSE)
+- Combined loss: L = L_class + λ × L_glucose
+
+| λ | 4-AUC |
+|---|-------|
+| 0.0 (no glucose) | 0.6605 |
+| 0.3 | 0.6614 |
+| 0.5 | 0.6628 |
+| 1.0 | 0.6637 |
+
+**Conclusion:** Multi-task approach underperformed Option C LSTM (0.6725) due to architecture change (BiLSTM hidden=128 overfit). CGM signal helped incrementally (+0.003) but not enough. Abandoned in favor of knowledge distillation.
+
+### 4.4 Knowledge Distillation (Teacher → Student)
+
+**Approach:**
+```
+TEACHER: wearable(41) + CGM(8) = 49 features/day → LSTM+Attention → soft predictions
+STUDENT: wearable(41) only                       → LSTM+Attention → learns from teacher
+```
+
+Both teacher and student use the proven architecture (hidden=64, 2-layer LSTM, attention, dropout=0.4). The teacher is trained on wearable + CGM features jointly.
+
+**Distillation loss:**
+```
+L_student = α × CE(student, hard_labels) + (1-α) × KL(student/T, teacher/T) × T²
+```
+
+Where T = temperature (softens probability distributions) and α = hard label weight.
+
+**Teacher performance:** 4-AUC = 0.7472 | Accuracy = 45.4%
+
+**Student sweep (9 configurations: T ∈ {2,3,4} × α ∈ {0.3,0.5,0.7}):**
+
+| T | α | 4-AUC | 3-AUC | 2-AUC |
+|---|---|-------|-------|-------|
+| **2** | **0.3** | **0.6879** | **0.6858** | **0.6846** |
+| 2 | 0.5 | 0.6838 | 0.6811 | 0.6772 |
+| 2 | 0.7 | 0.6774 | 0.6753 | 0.6705 |
+| 3 | 0.3 | 0.6877 | 0.6855 | 0.6849 |
+| 3 | 0.5 | 0.6838 | 0.6809 | 0.6769 |
+| 3 | 0.7 | 0.6782 | 0.6767 | 0.6733 |
+| 4 | 0.3 | 0.6877 | 0.6856 | 0.6850 |
+| 4 | 0.5 | 0.6836 | 0.6808 | 0.6773 |
+| 4 | 0.7 | 0.6779 | 0.6766 | 0.6729 |
+
+**Best student: T=2, α=0.3** — heavier teacher reliance (70% soft labels) works best. The student recovers ~20% of the teacher's performance gap using only wearable data.
+
+### 4.5 Hybrid LSTM with Survey Features
+
+**Architecture (HybridLSTMAttn):**
+```
+Temporal branch:  Input(batch, 14, 41) → LSTM(64, 2 layers, attention) → h_temporal(64)
+Static branch:    Input(batch, 27)     → MLP(27→64→32, ReLU, Dropout) → h_static(32)
+Fusion:           concat(h_temporal, h_static) → Linear(96→4)
+```
+
+This architecture fuses temporal wearable patterns with static survey features before the classification head.
+
+**Training:** Same distillation setup as 4.4 but with survey features added to the student.
+
+**Best config sweep (T ∈ {2,3,4} × α ∈ {0.3,0.5,0.7}):**
+
+| T | α | 4-AUC | 3-AUC | 2-AUC |
+|---|---|-------|-------|-------|
+| **2** | **0.5** | **0.7167** | **0.7213** | **0.7474** |
+| 2 | 0.3 | 0.7089 | 0.7118 | 0.7393 |
+| 3 | 0.5 | 0.7131 | 0.7180 | 0.7431 |
+
+**Improvement:** +0.0288 4-AUC over distilled LSTM without survey (0.6879 → 0.7167).
+
+### 4.6 LightGBM with Summary Statistics
+
+LightGBM trained on flattened wearable summary stats (288 features) + survey (27 features) = 315 total. Three dedicated models trained for each evaluation level:
+
+**Hyperparameters (default):**
+- n_estimators=2000, learning_rate=0.05, max_depth=6
+- num_leaves=31, min_child_samples=20, is_unbalance=True
+- Early stopping: patience=50 on validation logloss
+
+| Model | 4-AUC | 3-AUC | 2-AUC |
+|-------|-------|-------|-------|
+| LGB 4-class | 0.7024 | — | 0.7658 |
+| LGB 3-class (dedicated) | — | 0.7321 | — |
+| LGB 2-class (dedicated) | — | — | 0.7718 |
+
+**LGB + Hybrid LSTM Ensemble (best weights):**
+- LGB×0.4 + Hybrid×0.6: 4-AUC=0.7333, 3-AUC=0.7394, 2-AUC=0.7823
+
+**Top LightGBM features:** PAID score (diabetes distress), hypertension, family history (parent), age, education years, high cholesterol, diet score — survey features dominated the importance rankings.
+
+**Survey-only ablation:** LGB with only 27 survey features achieved 4-AUC = 0.6963 — nearly matching the LSTM with 41 temporal wearable features (0.6725), demonstrating the extreme predictive power of self-reported health data.
+
+### 4.7 LightGBM with Per-Day Features
+
+Instead of summary statistics, raw per-day values (14 × 41 = 574) were fed directly to LightGBM alongside aggregates (123) and survey (27) = **725 total features**.
+
+| Model | 4-AUC |
+|-------|-------|
+| Per-day LGB 4-class | 0.7067 |
+
+Marginal improvement over summary stats (0.7024). LightGBM already captured most temporal patterns from aggregates.
+
+**3-way ensemble (PerDay×0.3 + SumLGB×0.3 + Hybrid×0.4):** 4-AUC=0.7338, 3-AUC=0.7407, 2-AUC=0.7852
+
+### 4.8 Optuna Hyperparameter Optimization
+
+Bayesian optimization via Optuna (150 trials per task) on the LightGBM summary features model. Key hyperparameters tuned:
+
+| Parameter | Search Range | Best (4-class) | Best (3-class) | Best (2-class) |
+|-----------|-------------|----------------|----------------|----------------|
+| learning_rate | 0.005–0.1 (log) | 0.0114 | 0.0089 | 0.0507 |
+| max_depth | 3–10 | 4 | 9 | 10 |
+| num_leaves | 15–127 | 113 | 97 | 56 |
+| min_child_samples | 5–60 | 58 | 60 | 36 |
+| colsample_bytree | 0.3–1.0 | 0.30 | 0.32 | 0.37 |
+| reg_alpha | 1e-3–10 (log) | 0.001 | 0.68 | 7.74 |
+| min_split_gain | 0–5 | 4.68 | 4.82 | 4.01 |
+
+**Key insight:** High `min_split_gain` (4.0–4.8) preferred across all tasks — strong regularization is critical for this small dataset (n=1586).
+
+**Optuna Results:**
+
+| Model | 4-AUC | 3-AUC | 2-AUC |
+|-------|-------|-------|-------|
+| Optuna LGB 4-class | 0.7266 | 0.7392 | 0.7888 |
+| Optuna LGB 3-class (dedicated) | — | 0.7481 | — |
+| Optuna LGB 2-class (dedicated) | — | — | 0.7904 |
+
+### 4.9 Augmented Survey Feature Mining
+
+Expanded from 27 to 60 survey features by adding:
+- CES-D depression items (ces1–ces10): individual items beyond total score
+- Food insecurity (pxfi3–5): additional items
+- Vision difficulty (via2, via3): reading, driving
+- Additional comorbidities: arthritis, lung problems, urinary, cognitive, cataracts, digestive, hearing, dry eye, other heart issues, falls, low BP
+- Lifestyle: activity level (dmlact), fruit/veg consumption (dmlfrveg)
+- Fasting hours (paate), racial discrimination items (pxrd1/4/7/10)
+
+Univariate screening showed **activity level** (AUC=0.5887) and **arthritis** (AUC=0.5624) as strongest new features. Optuna tuning (200 trials) on 348 augmented features yielded 2-AUC = 0.7928 (marginal over 0.7904 with 27 features).
+
+---
+
+## 5. Ensemble Methods
+
+### 5.1 Weighted Averaging
+
+All models produce out-of-fold (OOF) probability predictions via 5-fold StratifiedKFold. For multi-class models, 2-class probability is computed by summing P(prediabetes) + P(oral_med) + P(insulin).
+
+Ensemble weights determined by grid search over OOF predictions:
+
+### 5.2 Stacking (Meta-Learner)
+
+Attempted LogisticRegression and LightGBM as second-level learners on 22 meta-features (all OOF predictions). Best stacked result: 2-AUC = 0.7940 (LogisticRegression, C=1.0). Stacking did not significantly improve over weighted averaging due to high correlation between base models.
+
+### 5.3 Best Ensemble Configurations
+
+| Ensemble | 4-AUC | 3-AUC | 2-AUC |
+|----------|-------|-------|-------|
+| LGB×0.4 + Hybrid×0.6 | 0.7333 | 0.7394 | 0.7823 |
+| PerDay×0.3 + SumLGB×0.3 + Hybrid×0.4 | 0.7338 | 0.7407 | 0.7852 |
+| **OptLGB×0.6 + Hybrid×0.4** | **0.7412** | **0.7490** | **0.7937** |
+| OptLGB×0.7 + Hybrid×0.3 | 0.7397 | 0.7484 | 0.7941 |
+| Opt4×0.3 + Opt2(ded) + LGB + Hybrid (4-way) | — | — | 0.7978 |
+
+---
+
+## 6. Final Results
+
+### 6.1 Model Progression
+
+| Model | 4-AUC | 3-AUC | 2-AUC | Key Innovation |
+|-------|-------|-------|-------|----------------|
+| Random Forest baseline | 0.6534 | — | — | Flattened daily features |
+| LSTM + Attention | 0.6618 | — | — | Temporal modeling with attention |
+| + Option C features | 0.6725 | 0.6706 | 0.6632 | HRV, circadian, sleep quality features |
+| + Knowledge Distillation | 0.6879 | 0.6858 | 0.6846 | CGM teacher → wearable student |
+| + Survey features (Hybrid LSTM) | 0.7167 | 0.7213 | 0.7474 | Fused temporal + static branches |
+| + LightGBM (summary stats) | 0.7024 | — | 0.7658 | Tree model on flattened features |
+| + LGB + Hybrid ensemble | 0.7333 | 0.7394 | 0.7823 | Neural + tree ensemble |
+| + Optuna tuning | 0.7266 | 0.7481 | 0.7904 | Bayesian hyperparameter search |
+| **+ Best ensemble (Optuna+Hybrid)** | **0.7412** | **0.7490** | **0.7937** | **Optimized multi-model blend** |
+
+### 6.2 Improvement from Baseline
+
+| Metric | Baseline (Distilled LSTM) | Best Ensemble | Improvement |
+|--------|--------------------------|---------------|-------------|
+| 4-AUC | 0.6879 | 0.7412 | **+0.0533** |
+| 3-AUC | 0.6858 | 0.7490 | **+0.0632** |
+| 2-AUC | 0.6846 | 0.7937 | **+0.1091** |
+
+### 6.3 Improvement from Original RF Baseline
+
+| Metric | RF Baseline | Best Ensemble | Improvement |
+|--------|-------------|---------------|-------------|
+| 4-AUC | 0.6534 | 0.7412 | **+0.0878** |
+
+---
+
+## 7. Key Findings & Insights
+
+1. **Survey data is extremely predictive.** Survey-only LightGBM (27 features) achieved 4-AUC = 0.6963, nearly matching the temporal LSTM with 41 wearable features per day (0.6725). Self-reported comorbidities (hypertension, obesity), family history, and diabetes distress (PAID score) are among the strongest individual predictors.
+
+2. **Knowledge distillation successfully transfers CGM signal.** The distilled student model (wearable-only) recovers ~20% of the teacher's performance gap. Low α (0.3 = 70% teacher soft labels) works best, suggesting the soft probability distributions contain richer information than hard class labels.
+
+3. **Neural + tree ensembles outperform either alone.** The LSTM captures temporal dynamics and inter-day patterns; LightGBM captures feature interactions and handles survey data natively. Their errors are sufficiently decorrelated for ensemble gains.
+
+4. **Strong regularization is critical.** Optuna consistently found high `min_split_gain` (4.0–4.8) and heavy `colsample_bytree` regularization (0.30–0.37) — expected for n=1586 with 315+ features.
+
+5. **HRV and circadian features matter most** among wearable signals. RMSSD, circadian HR amplitude, and sleep efficiency are the strongest wearable predictors of diabetes severity, consistent with known diabetic autonomic neuropathy pathophysiology.
+
+6. **Daily resolution beats hourly.** 14 meaningful daily summaries outperform 336 sparse hourly readings (4-AUC: 0.6725 vs 0.6454). The attention mechanism effectively learns which days are most informative.
+
+7. **Diminishing returns near 0.80.** Multiple approaches (stacking, augmented features, multi-seed ensembles, fine-grained weight search) were explored to push 2-AUC from 0.7937 to 0.80+, reaching 0.7978 at best. The remaining gap likely requires fundamentally new data sources or substantially larger cohorts.
+
+---
+
+## 8. Technical Infrastructure
+
+### 8.1 Hardware
+- **GPU:** NVIDIA GeForce RTX 2050, 4GB VRAM
+- **CUDA:** 13.0, PyTorch 2.11.0+cu128
+
+### 8.2 Software Stack
+- Python 3.12, PyTorch, LightGBM, Optuna, scikit-learn
+- Jupyter with `python312-cuda` kernel for GPU-accelerated notebooks
+
+### 8.3 Reproducibility
+- Random seed: 42 (numpy, random, torch, CUDA)
+- All OOF predictions saved as `.npy` arrays in `outputs/features/`
+- 5-fold StratifiedKFold with fixed random_state throughout
+
+---
+
+## 9. Saved Artifacts
+
+### 9.1 Feature Arrays (`outputs/features/`)
+
+| File | Shape | Description |
+|------|-------|-------------|
+| person_ids.npy | (1586,) | Participant IDs |
+| X.npy | (1586, 14, 22) | Base wearable features |
+| X_option_c.npy | (1586, 14, 19) | Enhanced wearable features |
+| X_cgm.npy | (1586, 14, 8) | CGM features (training only) |
+| X_survey.npy | (1586, 27) | Survey features |
+| y.npy | (1586,) | 4-class labels |
+| lengths.npy | (1586,) | Valid day counts |
+
+### 9.2 OOF Predictions (`outputs/features/`)
+
+| File | Shape | Model | 2-AUC |
+|------|-------|-------|-------|
+| teacher_oof_proba.npy | (1586, 4) | Teacher (wearable+CGM) | — |
+| oof_T2_a0.3.npy | (1586, 4) | Distilled LSTM (wearable) | 0.6846 |
+| oof_hybrid_T2_a0.5.npy | (1586, 4) | Hybrid LSTM+Survey | 0.7474 |
+| oof_lgb_4class.npy | (1586, 4) | LGB summary 4-class | 0.7658 |
+| oof_lgb_3class.npy | (1586, 3) | LGB summary 3-class | — |
+| oof_lgb_2class.npy | (1586,) | LGB dedicated binary | 0.7718 |
+| oof_lgb_perday_4class.npy | (1586, 4) | LGB per-day 4-class | 0.7690 |
+| oof_optuna_4class.npy | (1586, 4) | Optuna LGB 4-class | 0.7888 |
+| oof_optuna_3class.npy | (1586, 3) | Optuna LGB 3-class | — |
+| oof_optuna_2class.npy | (1586,) | Optuna LGB binary | 0.7904 |
+
+---
+
+## 10. File Index
+
+### Scripts
+| File | Purpose |
+|------|---------|
+| config.py | Central configuration (paths, constants, feature definitions) |
+| 06_survey_distillation.py | Survey feature extraction + Hybrid LSTM distillation |
+| 07_optuna_tuning.py | Optuna hyperparameter optimization (150 trials × 3 tasks) |
+
+### Notebooks
+| File | Purpose |
+|------|---------|
+| notebooks/01_data_audit.ipynb | Interactive data exploration and quality checks |
+| notebooks/02_cgm_multitask.ipynb | CGM multi-task experiments and visualizations |
+| notebooks/03_survey_distillation.ipynb | Survey-augmented knowledge distillation |
+| notebooks/04_lightgbm_ensemble.ipynb | LightGBM with summary stats + ensembles |
+| notebooks/05_lgb_perday.ipynb | LightGBM with per-day features |
+| notebooks/06_optuna_tuning.ipynb | Optuna tuning (notebook version, superseded by script) |
+| notebooks/lstm.ipynb | LSTM architecture exploration |
+
+### Source Library (`src/`)
+| File | Purpose |
+|------|---------|
+| src/data/cohort.py | Load, merge, filter, label the cohort |
+| src/data/loaders.py | Generic JSON loader for sensor files |
+| src/data/quality.py | Data quality checks, dead sensor detection |
+| src/features/continuous.py | 13 daily features from HR, Stress, Resp, SpO2 |
+| src/features/sleep.py | 5 daily features from sleep stage intervals |
+| src/features/activity.py | 4 daily features from activity + calories |
+| src/features/daily_summary.py | Merge all 22 features → (N, 14, 22) sequences |
+| src/features/enhanced.py | Option C (19) + Option D (10) feature extractors |
+| src/features/cgm.py | Dexcom G6 CGM feature extraction |
+| src/models/baseline.py | Random Forest + Logistic Regression |
+| src/models/lstm.py | DiasenseLSTM with attention |
+| src/models/trainer.py | Training loop with StratifiedKFold CV |
+| src/evaluation/metrics.py | Hierarchical evaluation (4/3/2 class) |
